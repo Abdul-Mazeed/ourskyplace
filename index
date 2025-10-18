@@ -1,0 +1,242 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>SafeSky — Private Vault</title>
+<style>
+/* General page */
+body {
+  font-family: 'Inter', system-ui, Arial;
+  max-width: 800px;
+  margin: 24px auto;
+  padding: 16px;
+  color: #111;
+  background: #f9fafc;
+}
+
+/* Header */
+header {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 24px;
+}
+header h2 {
+  margin: 0;
+  color: #2c3e50;
+}
+header .muted {
+  font-size: 14px;
+  color: #666;
+}
+
+/* Card sections */
+.card {
+  border-radius: 12px;
+  padding: 16px;
+  background: #fff;
+  border: 1px solid #eee;
+  box-shadow: 0 4px 8px rgba(0,0,0,0.05);
+  margin-top: 16px;
+}
+
+/* Labels */
+label {
+  font-weight: 600;
+  margin-top: 12px;
+  display: block;
+}
+
+/* Inputs and textarea */
+input, textarea, button {
+  font-size: 14px;
+  padding: 10px;
+  border-radius: 8px;
+  border: 1px solid #ddd;
+  width: 100%;
+  box-sizing: border-box;
+}
+textarea {
+  min-height: 100px;
+  resize: vertical;
+}
+
+/* Row layout for buttons */
+.row {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+.small {
+  width: 160px;
+}
+
+/* Buttons */
+button {
+  background: #3498db;
+  color: #fff;
+  font-weight: 600;
+  border: none;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+button:hover {
+  background: #2980b9;
+}
+
+/* Muted text */
+.muted {
+  font-size: 13px;
+  color: #666;
+}
+
+/* Danger text */
+.danger {
+  color: #a00;
+  font-weight: 700;
+}
+</style>
+</head>
+<body>
+<header>
+  <h2>SafeSky — Private Vault</h2>
+  <div class="muted">Offline-first, client-side encrypted messages</div>
+</header>
+
+<div class="card">
+  <label>Shared passphrase (only you & Lilia):</label>
+  <input id="pass" placeholder="Choose a long passphrase you both memorize" autocomplete="off" />
+  <div class="muted">Use same passphrase on both devices. Do NOT share with others.</div>
+</div>
+
+<div class="card">
+  <label>Write message (type something private):</label>
+  <textarea id="msg" placeholder="Write to Lilia..."></textarea>
+  <div class="row">
+    <button id="enc">Encrypt & Copy</button>
+    <button id="export">Export Encrypted File</button>
+  </div>
+  <div class="muted">Click "Encrypt & Copy" and paste the encrypted blob into Lilia’s chat. She will paste it into the "Decrypt" box below.</div>
+</div>
+
+<div class="card">
+  <label>Decrypt (paste encrypted blob here):</label>
+  <textarea id="blob" placeholder="Paste encrypted blob"></textarea>
+  <div class="row">
+    <button id="dec">Decrypt</button>
+    <button id="import">Import Encrypted File</button>
+  </div>
+  <label class="muted">Decrypted text:</label>
+  <textarea id="out" readonly placeholder="Decrypted message will appear here"></textarea>
+</div>
+
+<div class="card">
+  <label>Emergency Beacon (short code — e.g., SK-9):</label>
+  <input id="beacon" placeholder="Leave a short code" />
+  <div class="row">
+    <button id="beaconSave">Encrypt Beacon & Copy</button>
+    <button id="beaconLoad">Paste Beacon & Decrypt</button>
+  </div>
+  <div class="muted">Use this to leave a tiny signal that only Lilia can read. Encrypted copy can be pasted anywhere public.</div>
+</div>
+
+<script>
+// Encryption / Decryption code (same as before)
+async function getKeyFromPass(pass){
+  const pwUtf8 = new TextEncoder().encode(pass);
+  const salt = new TextEncoder().encode('SafeSkySalt_v1');
+  const base = await crypto.subtle.importKey('raw', pwUtf8, 'PBKDF2', false, ['deriveKey']);
+  return crypto.subtle.deriveKey(
+    {name:'PBKDF2',salt:salt,iterations:200000,hash:'SHA-256'},
+    base,
+    {name:'AES-GCM',length:256},
+    false,
+    ['encrypt','decrypt']
+  );
+}
+
+function abToBase64(buf){ return btoa(String.fromCharCode(...new Uint8Array(buf))); }
+function base64ToAb(s){ const bin = atob(s); const arr=new Uint8Array(bin.length); for(let i=0;i<bin.length;i++) arr[i]=bin.charCodeAt(i); return arr.buffer; }
+
+async function encryptText(key, text){ 
+  const iv = crypto.getRandomValues(new Uint8Array(12)); 
+  const enc = new TextEncoder().encode(text); 
+  const ct = await crypto.subtle.encrypt({name:'AES-GCM',iv:iv}, key, enc); 
+  const out=new Uint8Array(iv.length+ct.byteLength); 
+  out.set(iv,0); out.set(new Uint8Array(ct), iv.length); 
+  return abToBase64(out.buffer); 
+}
+
+async function decryptText(key, b64){ 
+  const buf=base64ToAb(b64); const u=new Uint8Array(buf); 
+  const iv=u.slice(0,12); const ct=u.slice(12); 
+  try{ const pt=await crypto.subtle.decrypt({name:'AES-GCM',iv:iv},key,ct); return new TextDecoder().decode(pt); } 
+  catch(e){ return null; } 
+}
+
+document.getElementById('enc').onclick=async()=>{
+  const pass=document.getElementById('pass').value.trim();
+  const text=document.getElementById('msg').value;
+  if(!pass||!text){alert('Enter passphrase and message');return;}
+  const key=await getKeyFromPass(pass);
+  const blob=await encryptText(key,text);
+  navigator.clipboard.writeText(blob).then(()=>alert('Encrypted message copied to clipboard — paste it to Lilia.'));
+};
+
+document.getElementById('dec').onclick=async()=>{
+  const pass=document.getElementById('pass').value.trim();
+  const blob=document.getElementById('blob').value.trim();
+  if(!pass||!blob){alert('Enter passphrase and encrypted blob');return;}
+  const key=await getKeyFromPass(pass);
+  const txt=await decryptText(key,blob);
+  if(txt===null){alert('Decrypt failed — wrong passphrase or corrupted blob');return;}
+  document.getElementById('out').value=txt;
+};
+
+document.getElementById('beaconSave').onclick=async()=>{
+  const pass=document.getElementById('pass').value.trim();
+  const code=document.getElementById('beacon').value.trim();
+  if(!pass||!code){alert('Enter passphrase and beacon code');return;}
+  const key=await getKeyFromPass(pass);
+  const blob=await encryptText(key,code);
+  navigator.clipboard.writeText(blob).then(()=>alert('Encrypted beacon copied. Only Lilia can read it.'));
+};
+
+document.getElementById('beaconLoad').onclick=async()=>{
+  const pass=document.getElementById('pass').value.trim();
+  const blob=prompt('Paste encrypted beacon here:');
+  if(!pass||!blob) return;
+  const key=await getKeyFromPass(pass);
+  const txt=await decryptText(key,blob);
+  if(txt===null) alert('Decrypt failed — wrong passphrase or corrupted blob'); else alert('Beacon reads: '+txt);
+};
+
+document.getElementById('export').onclick=async()=>{
+  const pass=document.getElementById('pass').value.trim();
+  const text=document.getElementById('msg').value;
+  if(!pass||!text){alert('Enter passphrase and message');return;}
+  const key=await getKeyFromPass(pass);
+  const blob=await encryptText(key,text);
+  const blobFile=new Blob([blob],{type:'text/plain'});
+  const url=URL.createObjectURL(blobFile);
+  const a=document.createElement('a'); a.href=url; a.download='safesky-msg.txt'; a.click();
+  URL.revokeObjectURL(url);
+  alert('Encrypted file downloaded. Send to Lilia.');
+};
+
+document.getElementById('import').onclick=async()=>{
+  const file=document.createElement('input'); file.type='file'; file.accept='text/*';
+  file.onchange=async(e)=>{
+    const f=e.target.files[0];
+    if(!f) return;
+    const txt=await f.text();
+    document.getElementById('blob').value=txt.trim();
+    alert('Encrypted blob loaded. Enter passphrase and click Decrypt.');
+  };
+  file.click();
+};
+</script>
+</body>
+</html>
